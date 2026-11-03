@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 
 const register = async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -42,16 +42,6 @@ const register = async (req, res) => {
       });
     }
 
-    if (
-      role !== undefined &&
-      !['attendee', 'organizer'].includes(role)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: 'Role must be attendee or organizer',
-      });
-    }
-
     const normalizedEmail = email.trim().toLowerCase();
 
     const existingUser = await User.findOne({
@@ -69,7 +59,7 @@ const register = async (req, res) => {
       name: name.trim(),
       email: normalizedEmail,
       password,
-      role: role || 'attendee',
+      role: 'attendee',
     });
 
     return res.status(201).json({

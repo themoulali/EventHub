@@ -7,6 +7,8 @@ import {
   Routes,
   useNavigate,
 } from 'react-router-dom'
+import OrganizerDashboard from './components/Organizer/OrganizerDashboard'
+import AttendeeDashboard from './components/Attendee/AttendeeDashboard'
 
 const API_URL = '/api'
 
@@ -375,7 +377,7 @@ if (allowedRole && user.role !== allowedRole) {
 }
 
 const isOrganizer = user.role === 'organizer'
-
+const token = getStoredToken()
   return (
     <main className="min-h-screen bg-slate-100">
       <header className="flex flex-wrap items-center justify-between gap-4 bg-white px-6 py-4 shadow-sm">
@@ -396,37 +398,11 @@ const isOrganizer = user.role === 'organizer'
         </div>
       </header>
 
-      <section className="mx-auto max-w-4xl p-6 sm:p-10">
-        <div className="rounded-2xl bg-white p-8 shadow-sm">
-          <p className="mb-2 text-sm font-semibold uppercase tracking-widest text-indigo-600">
-            {isOrganizer ? 'Organizer portal' : 'Attendee portal'}
-          </p>
-
-          <h1 className="mb-3 text-3xl font-bold text-slate-900">
-            Welcome, {user.name}!
-          </h1>
-
-          {isOrganizer ? (
-            <p className="text-slate-600">
-              Your organizer dashboard is ready for event creation and management.
-              Those features will be added in the upcoming project steps.
-            </p>
-          ) : (
-            <p className="text-slate-600">
-              Your attendee dashboard is ready for event discovery and ticket
-              reservations. Those features will be added in the upcoming project steps.
-            </p>
-          )}
-
-          <div className="mt-6 rounded-xl bg-indigo-50 p-4">
-            <p className="font-semibold text-indigo-900">Signed-in account</p>
-            <p className="mt-1 text-sm text-indigo-800">{user.email}</p>
-            <p className="mt-1 text-sm text-indigo-800">
-              Role: {user.role}
-            </p>
-          </div>
-        </div>
-      </section>
+            {isOrganizer ? (
+        <OrganizerDashboard user={user} token={token} />
+            ) : (
+        <AttendeeDashboard user={user} />
+      )}
     </main>
   )
 }

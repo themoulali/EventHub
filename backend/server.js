@@ -6,6 +6,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
+const eventRoutes = require('./routes/eventRoutes');
 const authMiddleware = require('./middleware/authMiddleware');
 
 dotenv.config({ path: '../.env' });
@@ -20,6 +21,7 @@ app.use(
 
 app.use(express.json());
 app.use('/api/auth', authRoutes);
+app.use('/api/events', eventRoutes);
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({
