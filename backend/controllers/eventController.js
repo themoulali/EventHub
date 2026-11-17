@@ -1,5 +1,11 @@
 const mongoose = require('mongoose');
 const Event = require('../models/Event');
+const Seat = require('../models/Seat');
+
+const {
+  generateSeatsForEvent,
+  generateMissingSeatsForEvent,
+} = require('../services/seatGenerationService');
 
 // Allowed event fields
 const allowedFields = [
@@ -67,6 +73,19 @@ const createEvent = async (req, res) => {
       ...req.body,
       organizer: req.user.id,
     });
+
+    try {
+      await generateSeatsForEvent(event);
+    } catch (seatError) {
+      // Remove the event if seat generation fails.
+      try {
+        await event.deleteOne();
+      } catch (cleanupError) {
+        console.error('Failed to clean up event after seat generation:', cleanupError);
+      }
+
+      throw seatError;
+    }
 
     return res.status(201).json({
       success: true,
@@ -199,9 +218,33 @@ const updateEvent = async (req, res) => {
       });
     }
 
+    // Protect existing seats from capacity reduction.
+    if (
+      req.body.capacity !== undefined &&
+      Number(req.body.capacity) < event.capacity
+    ) {
+      const existingSeats = await Seat.find({
+        event: event._id,
+      })
+        .select('_id')
+        .lean();
+
+      if (existingSeats.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Event capacity cannot be reduced after seats have been generated',
+        });
+      }
+    }
+
     Object.assign(event, req.body);
 
     await event.save();
+
+    // Generate only missing seats when capacity is provided.
+    if (req.body.capacity !== undefined) {
+      await generateMissingSeatsForEvent(event);
+    }
 
     return res.status(200).json({
       success: true,

@@ -1,17 +1,32 @@
+
 const dns = require('dns');
 
 dns.setServers(['8.8.8.8', '1.1.1.1']);
+
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+
 const connectDB = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
 const eventRoutes = require('./routes/eventRoutes');
-const authMiddleware = require('./middleware/authMiddleware');
+const seatRoutes = require('./routes/seatRoutes');
+
+const {
+  initializeSocket,
+} = require('./config/socket');
+
+const {
+  startSeatHoldCleanup,
+} = require('./services/seatHoldService');
 
 dotenv.config({ path: '../.env' });
 
 const app = express();
+
+// Create one HTTP server for Express and Socket.IO
+const httpServer = http.createServer(app);
 
 app.use(
   cors({
@@ -20,8 +35,10 @@ app.use(
 );
 
 app.use(express.json());
+
 app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
+app.use('/api/events/:eventId/seats', seatRoutes);
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({
@@ -36,7 +53,13 @@ const startServer = async () => {
   try {
     await connectDB();
 
-    app.listen(PORT, () => {
+    // Initialize Socket.IO after the database connects
+    initializeSocket(httpServer);
+
+    // Start automatic expired-seat cleanup
+    startSeatHoldCleanup();
+
+    httpServer.listen(PORT, () => {
       console.log(`EventHub API running on port ${PORT}`);
     });
   } catch (error) {
@@ -49,4 +72,5 @@ if (require.main === module) {
   startServer();
 }
 
+// Preserve Express app export for existing Supertest tests
 module.exports = app;
