@@ -49,6 +49,19 @@ const seatSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // Ticket pricing tier assigned to this seat
+priceTier: {
+  type: String,
+  trim: true,
+  default: null,
+},
+
+// Price of this seat, stored as a snapshot
+price: {
+  type: Number,
+  min: [0, 'Seat price cannot be negative'],
+  default: null,
+},
   },
   {
     timestamps: true,

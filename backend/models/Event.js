@@ -1,3 +1,4 @@
+
 const mongoose = require('mongoose');
 
 // Ticket pricing subdocument
@@ -69,15 +70,32 @@ const eventSchema = new mongoose.Schema(
       },
     },
 
-    priceTiers: {
+        priceTiers: {
       type: [priceTierSchema],
       required: true,
-      validate: {
-        validator: function (tiers) {
-          return tiers.length > 0;
+      validate: [
+        {
+          validator: function (tiers) {
+            return Array.isArray(tiers) && tiers.length > 0;
+          },
+          message: 'At least one ticket pricing tier is required',
         },
-        message: 'At least one ticket pricing tier is required',
-      },
+        {
+          validator: function (tiers) {
+            if (!Array.isArray(tiers) || tiers.length === 0) {
+              return false;
+            }
+
+            const totalQuantity = tiers.reduce(
+              (total, tier) => total + tier.quantity,
+              0
+            );
+
+            return totalQuantity === this.capacity;
+          },
+          message: 'Total pricing tier quantities must equal event capacity',
+        },
+      ],
     },
 
     organizer: {

@@ -1,6 +1,10 @@
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const Seat = require('../models/Seat');
+const {
+  buildSeatDocuments,
+} = require('../services/seatGenerationService');
 
 jest.mock('../models/Event', () => ({
   create: jest.fn(),
@@ -15,6 +19,15 @@ jest.mock('../models/Seat', () => ({
 
 const Event = require('../models/Event');
 const app = require('../server');
+
+let mockSession;
+let transactionActive;
+
+const mockTransactionalEvent = (event) => {
+  Event.findById.mockReturnValue({
+    session: jest.fn().mockResolvedValue(event),
+  });
+};
 
 const EVENT_ID = '507f1f77bcf86cd799439011';
 const ORGANIZER_ID = '507f191e810c19729de860ea';
@@ -59,17 +72,45 @@ const mockEvent = (organizerId = ORGANIZER_ID) => ({
 
 const mockExistingSeats = (seats) => {
   Seat.find.mockReturnValue({
-    select: jest.fn().mockReturnValue({
-      lean: jest.fn().mockResolvedValue(seats),
-    }),
+    session: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue(seats),
   });
 };
 
 describe('EventHub Event API', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+
     process.env.JWT_SECRET = 'test-only-secret-for-eventhub';
+
+    transactionActive = false;
+
+    mockSession = {
+      startTransaction: jest.fn().mockImplementation(() => {
+        transactionActive = true;
+      }),
+
+      commitTransaction: jest.fn().mockImplementation(() => {
+        transactionActive = false;
+      }),
+
+      abortTransaction: jest.fn().mockImplementation(() => {
+        transactionActive = false;
+      }),
+
+      endSession: jest.fn(),
+
+      inTransaction: jest.fn(() => transactionActive),
+    };
+
+    jest.spyOn(mongoose, 'startSession').mockResolvedValue(mockSession);
+
     Seat.insertMany.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe('GET /api/events', () => {
@@ -267,7 +308,8 @@ describe('EventHub Event API', () => {
     test('allows an organizer to update their own event', async () => {
       const event = mockEvent(ORGANIZER_ID);
 
-      Event.findById.mockResolvedValue(event);
+      mockTransactionalEvent(event);
+      mockExistingSeats([]);
 
       const response = await request(app)
         .put(`/api/events/${EVENT_ID}`)
@@ -284,7 +326,7 @@ describe('EventHub Event API', () => {
     test('prevents another organizer from updating the event', async () => {
       const event = mockEvent(ORGANIZER_ID);
 
-      Event.findById.mockResolvedValue(event);
+      mockTransactionalEvent(event);
 
       const response = await request(app)
         .put(`/api/events/${EVENT_ID}`)
@@ -300,6 +342,194 @@ describe('EventHub Event API', () => {
       );
 
       expect(event.save).not.toHaveBeenCalled();
+    });
+    test('rejects pricing changes when seats already exist', async () => {
+      const event = mockEvent(ORGANIZER_ID);
+
+      mockTransactionalEvent(event);
+      mockExistingSeats([{ _id: '507f1f77bcf86cd799439012' }]);
+
+      const updatedTiers = [
+        { name: 'Standard', price: 799, quantity: 60 },
+        { name: 'VIP', price: 999, quantity: 40 },
+      ];
+
+      const response = await request(app)
+        .put(`/api/events/${EVENT_ID}`)
+        .set('Authorization', `Bearer ${organizerToken()}`)
+        .send({
+          priceTiers: updatedTiers,
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+      expect(response.body.message).toMatch(/cannot be changed/i);
+      expect(event.save).not.toHaveBeenCalled();
+    });
+
+    test('rejects decreasing the final pricing tier quantity', async () => {
+      const event = mockEvent(ORGANIZER_ID);
+      mockTransactionalEvent(event);
+      mockExistingSeats([{ _id: '507f1f77bcf86cd799439012' }]);
+
+      const response = await request(app)
+        .put(`/api/events/${EVENT_ID}`)
+        .set('Authorization', `Bearer ${organizerToken()}`)
+        .send({
+          priceTiers: [
+            { name: 'Standard', price: 499, quantity: 60 },
+            { name: 'VIP', price: 999, quantity: 30 },
+          ],
+          capacity: 100,
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toMatch(/cannot be decreased/i);
+      expect(event.save).not.toHaveBeenCalled();
+    });
+
+
+    test('rejects reducing capacity when seats already exist', async () => {
+      const event = mockEvent(ORGANIZER_ID);
+
+      mockTransactionalEvent(event);
+      mockExistingSeats([{ _id: '507f1f77bcf86cd799439012' }]);
+
+      const response = await request(app)
+        .put(`/api/events/${EVENT_ID}`)
+        .set('Authorization', `Bearer ${organizerToken()}`)
+        .send({
+          capacity: 80,
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toMatch(/cannot be reduced/i);
+      expect(event.save).not.toHaveBeenCalled();
+    });
+
+    test('increases capacity by generating only missing seats', async () => {
+      const event = mockEvent(ORGANIZER_ID);
+
+      mockTransactionalEvent(event);
+
+      const updatedTiers = [
+        { name: 'Standard', price: 499, quantity: 60 },
+        { name: 'VIP', price: 999, quantity: 50 },
+      ];
+
+      const expectedSeats = buildSeatDocuments({
+        ...event,
+        capacity: 110,
+        priceTiers: updatedTiers,
+      });
+
+      const existingSeatNumbers = expectedSeats
+        .slice(0, 2)
+        .map((seat) => ({ seatNumber: seat.seatNumber }));
+
+      // Controller checks existing seats.
+      Seat.find.mockReturnValueOnce({
+        session: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue(existingSeatNumbers),
+      });
+
+      // Service checks existing seat numbers.
+      Seat.find.mockReturnValueOnce({
+        session: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue(existingSeatNumbers),
+      });
+
+      const response = await request(app)
+        .put(`/api/events/${EVENT_ID}`)
+        .set('Authorization', `Bearer ${organizerToken()}`)
+        .send({
+          capacity: 110,
+          priceTiers: updatedTiers,
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(event.save).toHaveBeenCalled();
+      expect(Seat.insertMany).toHaveBeenCalledTimes(1);
+
+      const insertedSeats = Seat.insertMany.mock.calls[0][0];
+
+      expect(insertedSeats).toHaveLength(108);
+
+      const insertedSeatNumbers = insertedSeats.map(
+        (seat) => seat.seatNumber
+      );
+
+      existingSeatNumbers.forEach(({ seatNumber }) => {
+        expect(insertedSeatNumbers).not.toContain(seatNumber);
+      });
+    });
+
+  test('rejects invalid pricing and capacity when no seats exist', async () => {
+    const event = mockEvent(ORGANIZER_ID);
+
+    mockTransactionalEvent(event);
+    mockExistingSeats([]);
+
+    const response = await request(app)
+      .put(`/api/events/${EVENT_ID}`)
+      .set('Authorization', `Bearer ${organizerToken()}`)
+      .send({
+        capacity: 110,
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body.message).toMatch(/quantities must equal event capacity/i);
+
+    expect(event.save).not.toHaveBeenCalled();
+    expect(Seat.insertMany).not.toHaveBeenCalled();
+  });
+    test('aborts transaction when seat generation fails', async () => {
+      const event = mockEvent(ORGANIZER_ID);
+
+      mockTransactionalEvent(event);
+
+      // Controller checks whether seats already exist.
+      Seat.find.mockReturnValueOnce({
+        session: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([
+          { _id: '507f1f77bcf86cd799439012' },
+        ]),
+      });
+
+      // Service checks existing seat numbers.
+      Seat.find.mockReturnValueOnce({
+        session: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([
+          { seatNumber: 'A1' },
+        ]),
+      });
+
+      Seat.insertMany.mockRejectedValue(
+        new Error('Simulated seat generation failure')
+      );
+
+      const response = await request(app)
+        .put(`/api/events/${EVENT_ID}`)
+        .set('Authorization', `Bearer ${organizerToken()}`)
+        .send({
+          capacity: 110,
+          priceTiers: [
+            { name: 'Standard', price: 499, quantity: 60 },
+            { name: 'VIP', price: 999, quantity: 50 },
+          ],
+        });
+
+      expect(response.status).toBe(500);
+      expect(mockSession.startTransaction).toHaveBeenCalledTimes(1);
+      expect(mockSession.abortTransaction).toHaveBeenCalledTimes(1);
+      expect(mockSession.commitTransaction).not.toHaveBeenCalled();
+      expect(mockSession.endSession).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -341,7 +571,7 @@ describe('EventHub Event API', () => {
   test('generates only additional seats when capacity increases', async () => {
     const event = mockEvent(ORGANIZER_ID);
 
-    Event.findById.mockResolvedValue(event);
+    mockTransactionalEvent(event);
 
     const existingSeats = Array.from({ length: 100 }, (_, index) => ({
       seatNumber: `${String.fromCharCode(65 + Math.floor(index / 10))}${(index % 10) + 1}`,
@@ -352,7 +582,13 @@ describe('EventHub Event API', () => {
     const response = await request(app)
       .put(`/api/events/${EVENT_ID}`)
       .set('Authorization', `Bearer ${organizerToken()}`)
-      .send({ capacity: 120 });
+      .send({
+        capacity: 120,
+        priceTiers: [
+          { name: 'Standard', price: 499, quantity: 60 },
+          { name: 'VIP', price: 999, quantity: 60 },
+        ],
+      });
 
     expect(response.status).toBe(200);
     expect(event.capacity).toBe(120);
@@ -369,7 +605,7 @@ describe('EventHub Event API', () => {
   test('rejects capacity reduction when seats already exist', async () => {
     const event = mockEvent(ORGANIZER_ID);
 
-    Event.findById.mockResolvedValue(event);
+    mockTransactionalEvent(event);
 
     mockExistingSeats([{ _id: 'existing-seat-id' }]);
 
@@ -391,7 +627,7 @@ describe('EventHub Event API', () => {
   test('does not create duplicate seats when capacity remains unchanged', async () => {
     const event = mockEvent(ORGANIZER_ID);
 
-    Event.findById.mockResolvedValue(event);
+    mockTransactionalEvent(event);
 
     const existingSeats = Array.from({ length: 100 }, (_, index) => ({
       seatNumber: `${String.fromCharCode(65 + Math.floor(index / 10))}${(index % 10) + 1}`,

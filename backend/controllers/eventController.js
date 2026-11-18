@@ -57,6 +57,109 @@ const validateEventInput = (data, isUpdate = false) => {
   return null;
 };
 
+
+const validatePricingUpdateWithExistingSeats = (
+  currentTiers,
+  updatedTiers,
+  nextCapacity
+) => {
+  if (!Array.isArray(updatedTiers) || updatedTiers.length === 0) {
+    return 'At least one pricing tier is required';
+  }
+
+  if (updatedTiers.length !== currentTiers.length) {
+    return 'Pricing tiers cannot be added or removed after seats have been generated';
+  }
+
+  for (let index = 0; index < currentTiers.length; index += 1) {
+    const current = currentTiers[index];
+    const updated = updatedTiers[index];
+
+    if (
+      !updated ||
+      typeof updated !== 'object' ||
+      Array.isArray(updated)
+    ) {
+      return 'Each pricing tier must be a valid object';
+    }
+
+    if (
+      current.name !== updated.name ||
+      Number(current.price) !== Number(updated.price)
+    ) {
+      return 'Existing pricing tier names and prices cannot be changed after seats have been generated';
+    }
+
+    if (index < currentTiers.length - 1) {
+      if (Number(updated.quantity) !== Number(current.quantity)) {
+        return 'Only the final pricing tier quantity can be increased';
+      }
+    } else if (Number(updated.quantity) < Number(current.quantity)) {
+      return 'The final pricing tier quantity cannot be decreased';
+    }
+  }
+
+  const totalQuantity = updatedTiers.reduce(
+    (total, tier) => total + Number(tier.quantity),
+    0
+  );
+
+  if (totalQuantity !== Number(nextCapacity)) {
+    return 'Total pricing tier quantities must equal event capacity';
+  }
+
+  return null;
+};
+const validatePricingTiers = (tiers, capacity) => {
+  if (!Array.isArray(tiers) || tiers.length === 0) {
+    return 'At least one pricing tier is required';
+  }
+
+  if (!Number.isInteger(capacity) || capacity < 1) {
+    return 'Event capacity must be a positive whole number';
+  }
+
+  let totalQuantity = 0;
+
+  for (const tier of tiers) {
+    if (!tier || typeof tier !== 'object' || Array.isArray(tier)) {
+      return 'Each pricing tier must be a valid object';
+    }
+
+    if (typeof tier.name !== 'string' || !tier.name.trim()) {
+      return 'Each pricing tier must have a name';
+    }
+
+    if (
+      tier.price === undefined ||
+      tier.price === null ||
+      tier.price === '' ||
+      !Number.isFinite(Number(tier.price)) ||
+      Number(tier.price) < 0
+    ) {
+      return 'Each pricing tier must have a valid non-negative price';
+    }
+
+    if (
+      tier.quantity === undefined ||
+      tier.quantity === null ||
+      tier.quantity === '' ||
+      !Number.isInteger(Number(tier.quantity)) ||
+      Number(tier.quantity) < 1
+    ) {
+      return 'Each pricing tier quantity must be a positive whole number';
+    }
+
+    totalQuantity += Number(tier.quantity);
+  }
+
+  if (totalQuantity !== capacity) {
+    return 'Total pricing tier quantities must equal event capacity';
+  }
+
+  return null;
+};
+
 // CREATE EVENT
 const createEvent = async (req, res) => {
   try {
@@ -185,6 +288,8 @@ const getEventById = async (req, res) => {
 
 // UPDATE EVENT
 const updateEvent = async (req, res) => {
+  let session;
+
   try {
     const validationError = validateEventInput(req.body, true);
 
@@ -202,7 +307,12 @@ const updateEvent = async (req, res) => {
       });
     }
 
-    const event = await Event.findById(req.params.id);
+    // Start a MongoDB transaction.
+    session = await mongoose.startSession();
+    session.startTransaction();
+
+    // Read the event inside the transaction.
+    const event = await Event.findById(req.params.id).session(session);
 
     if (!event) {
       return res.status(404).json({
@@ -218,33 +328,80 @@ const updateEvent = async (req, res) => {
       });
     }
 
-    // Protect existing seats from capacity reduction.
-    if (
-      req.body.capacity !== undefined &&
-      Number(req.body.capacity) < event.capacity
-    ) {
-      const existingSeats = await Seat.find({
-        event: event._id,
-      })
-        .select('_id')
-        .lean();
+    // Check existing seats inside the same transaction.
+    const existingSeats = await Seat.find({
+      event: event._id,
+    })
+      .session(session)
+      .select('_id')
+      .lean();
 
-      if (existingSeats.length > 0) {
+    const hasExistingSeats = existingSeats.length > 0;
+
+    const nextCapacity =
+      req.body.capacity !== undefined
+        ? Number(req.body.capacity)
+        : event.capacity;
+
+    const nextPriceTiers =
+      req.body.priceTiers !== undefined
+        ? req.body.priceTiers
+        : event.priceTiers;
+
+    // Protect existing seats and pricing information.
+    if (hasExistingSeats) {
+      if (nextCapacity < event.capacity) {
         return res.status(400).json({
           success: false,
-          message: 'Event capacity cannot be reduced after seats have been generated',
+          message:
+            'Event capacity cannot be reduced after seats have been generated',
+        });
+      }
+
+      const pricingError = validatePricingUpdateWithExistingSeats(
+        event.priceTiers,
+        nextPriceTiers,
+        nextCapacity
+      );
+
+      if (pricingError) {
+        return res.status(400).json({
+          success: false,
+          message: pricingError,
         });
       }
     }
 
+    // Validate pricing and capacity before saving.
+    const generalPricingError = validatePricingTiers(
+      nextPriceTiers,
+      nextCapacity
+    );
+
+    if (generalPricingError) {
+      return res.status(400).json({
+        success: false,
+        message: generalPricingError,
+      });
+    }
+
+    // Update the event inside the transaction.
     Object.assign(event, req.body);
 
-    await event.save();
+    await event.save({ session });
 
-    // Generate only missing seats when capacity is provided.
-    if (req.body.capacity !== undefined) {
-      await generateMissingSeatsForEvent(event);
+    // Generate missing seats inside the same transaction.
+    if (req.body.capacity !== undefined && hasExistingSeats) {
+      await generateMissingSeatsForEvent(event, session);
     }
+
+    // Generate all seats if none existed previously.
+    if (!hasExistingSeats && req.body.capacity !== undefined) {
+      await generateSeatsForEvent(event, session);
+    }
+
+    // Commit only after both operations succeed.
+    await session.commitTransaction();
 
     return res.status(200).json({
       success: true,
@@ -265,9 +422,21 @@ const updateEvent = async (req, res) => {
       success: false,
       message: 'Unable to update event',
     });
+  } finally {
+    if (session) {
+      // Abort any transaction that did not commit.
+      if (session.inTransaction()) {
+        try {
+          await session.abortTransaction();
+        } catch (abortError) {
+          console.error('Transaction rollback error:', abortError.message);
+        }
+      }
+
+      await session.endSession();
+    }
   }
 };
-
 // DELETE EVENT
 const deleteEvent = async (req, res) => {
   try {
