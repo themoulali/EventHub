@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import EventForm from './EventForm'
 import EventList from './EventList'
+import CheckInScanner from './CheckInScanner'
 
 const API_URL = '/api'
 
@@ -222,6 +223,11 @@ function OrganizerDashboard({ user, token }) {
           deletingId={deletingId}
         />
       </div>
+      {/* QR Ticket Check-in */}
+      <CheckInScanner
+        events={events}
+        token={token}
+      />
     </section>
   )
 }

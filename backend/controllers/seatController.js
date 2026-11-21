@@ -50,7 +50,7 @@ const getEventSeats = async (req, res) => {
     await releaseExpiredSeats(eventId);
 
     const seats = await Seat.find({ event: eventId })
-      .select('seatNumber row status heldBy holdExpiresAt')
+      .select('seatNumber row status heldBy holdExpiresAt priceTier price')
       .sort({ row: 1, seatNumber: 1 });
 
     return res.status(200).json({

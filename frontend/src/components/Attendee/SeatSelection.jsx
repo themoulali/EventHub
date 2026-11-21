@@ -15,6 +15,8 @@ function SeatSelection({ event, onClose }) {
   const [holdExpiresAt, setHoldExpiresAt] = useState(null)
   const [secondsRemaining, setSecondsRemaining] = useState(0)
   const [actionLoading, setActionLoading] = useState(false)
+  const [bookingLoading, setBookingLoading] = useState(false)
+  const [bookingResult, setBookingResult] = useState(null)
 
   const loadSeats = useCallback(async () => {
     setLoading(true)
@@ -236,6 +238,51 @@ useEffect(() => {
     }
   }
 
+  async function handleConfirmBooking() {
+    if (!heldSeatId) return
+
+    const token = localStorage.getItem('eventhub_token')
+
+    if (!token) {
+      setActionError('Please log in again to complete your booking.')
+      return
+    }
+
+    setBookingLoading(true)
+    setActionError('')
+
+    try {
+      const response = await fetch(`${API_URL}/bookings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          eventId: event._id,
+          seatIds: [heldSeatId],
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || 'Booking could not be completed.')
+      }
+
+      setBookingResult(data)
+      setHeldSeatId(null)
+      setHoldExpiresAt(null)
+      setSecondsRemaining(0)
+
+      await loadSeats()
+    } catch (err) {
+      setActionError(err.message || 'Booking could not be completed.')
+    } finally {
+      setBookingLoading(false)
+    }
+  }
+
   function getSeatStyle(seat) {
     if (heldSeatId === seat._id || selectedSeatId === seat._id) {
       return 'bg-indigo-600 text-white border-indigo-700'
@@ -432,6 +479,58 @@ useEffect(() => {
             Time remaining to complete your booking.
           </p>
 
+          <div className="mt-5 rounded-lg border border-indigo-200 bg-white p-4 text-left">
+            <h3 className="text-lg font-bold text-slate-900">
+              Booking Summary
+            </h3>
+
+            <div className="mt-3 flex justify-between text-sm text-slate-600">
+              <span>Event</span>
+              <span className="font-medium text-slate-900">
+                {event.name}
+              </span>
+            </div>
+
+            <div className="mt-2 flex justify-between text-sm text-slate-600">
+              <span>Seat</span>
+              <span className="font-medium text-slate-900">
+                {heldSeat.seatNumber}
+              </span>
+            </div>
+
+            <div className="mt-2 flex justify-between text-sm text-slate-600">
+              <span>Price tier</span>
+              <span className="font-medium text-slate-900">
+                {heldSeat.priceTier}
+              </span>
+            </div>
+
+            <div className="mt-2 flex justify-between text-sm text-slate-600">
+              <span>Ticket price</span>
+              <span className="font-medium text-slate-900">
+                ₹{Number(heldSeat.price).toFixed(2)}
+              </span>
+            </div>
+
+            <div className="mt-4 flex justify-between border-t pt-3">
+              <span className="font-bold text-slate-900">
+                Total Amount
+              </span>
+              <span className="text-lg font-bold text-indigo-700">
+                ₹{Number(heldSeat.price).toFixed(2)}
+              </span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleConfirmBooking}
+            disabled={bookingLoading || actionLoading || secondsRemaining === 0}
+            className="mt-4 w-full rounded-lg bg-indigo-600 px-6 py-3 font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {bookingLoading ? 'Processing Payment...' : 'Confirm Booking & Pay'}
+          </button>
+
           <button
             type="button"
             onClick={handleReleaseSeat}
@@ -451,6 +550,58 @@ useEffect(() => {
         >
           {actionError}
         </p>
+      )}
+      {/* Booking Confirmation */}
+      {bookingResult && (
+        <div className="mt-6 rounded-xl border border-green-200 bg-green-50 p-6">
+          <h3 className="text-xl font-bold text-green-800">
+            Booking Confirmed Successfully!
+          </h3>
+
+          <p className="mt-2 text-sm text-green-700">
+            Your mock payment was successful.
+          </p>
+
+          <div className="mt-4 space-y-2 text-sm text-slate-700">
+            <p>
+              <strong>Booking Reference:</strong>{' '}
+              {bookingResult.booking.bookingReference}
+            </p>
+
+            <p>
+              <strong>Total Paid:</strong>{' '}
+              ₹{Number(bookingResult.booking.totalAmount).toFixed(2)}
+            </p>
+
+            <p>
+              <strong>Payment Status:</strong>{' '}
+              {bookingResult.booking.payment.status}
+            </p>
+          </div>
+
+          <div className="mt-5 space-y-4">
+            {bookingResult.tickets.map((ticket) => (
+              <div
+                key={ticket.ticketNumber}
+                className="rounded-lg border bg-white p-4"
+              >
+                <p className="font-semibold text-slate-900">
+                  Ticket: {ticket.ticketNumber}
+                </p>
+
+                <p className="mt-1 text-sm text-slate-600">
+                  Seat: {ticket.seatNumber}
+                </p>
+
+                <img
+                  src={ticket.qrCode}
+                  alt={`QR ticket for seat ${ticket.seatNumber}`}
+                  className="mx-auto mt-4 h-48 w-48"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </section>
   )

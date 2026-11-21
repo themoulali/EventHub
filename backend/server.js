@@ -13,6 +13,7 @@ const authRoutes = require('./routes/authRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 const seatRoutes = require('./routes/seatRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
+const checkInRoutes = require('./routes/checkInRoutes');
 
 const {
   initializeSocket,
@@ -41,6 +42,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/events/:eventId/seats', seatRoutes);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/check-in', checkInRoutes);
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({

@@ -246,7 +246,12 @@ const createBooking = async (req, res) => {
 
     for (const seat of orderedSeats) {
       const ticketNumber = generateTicketNumber();
-      const qrToken = generateQrToken();
+
+      const qrToken = generateQrToken({
+        ticketNumber,
+        eventId,
+      });
+
       const qrCode = await generateQrCode(qrToken);
 
       ticketDocuments.push({
