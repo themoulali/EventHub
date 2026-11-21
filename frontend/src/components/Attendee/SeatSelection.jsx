@@ -1,8 +1,8 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { io } from 'socket.io-client'
+import { API_URL, SOCKET_URL } from '../../config/api'
 
-const API_URL = '/api'
 const HOLD_DURATION_MS = 2 * 60 * 1000
 
 function SeatSelection({ event, onClose }) {
@@ -19,10 +19,10 @@ function SeatSelection({ event, onClose }) {
   const [bookingResult, setBookingResult] = useState(null)
 
   const loadSeats = useCallback(async () => {
-
     try {
       setError('')
-      setSeats(data.seats || [])
+      setSeats([])
+
       const response = await fetch(
         `${API_URL}/events/${event._id}/seats`
       )
@@ -47,7 +47,7 @@ function SeatSelection({ event, onClose }) {
 
   // Real-time seat updates using Socket.IO
 useEffect(() => {
-  const socket = io({
+  const socket = io(SOCKET_URL, {
     path: '/socket.io',
   })
 

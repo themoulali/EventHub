@@ -2,8 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import EventForm from './EventForm'
 import EventList from './EventList'
 import CheckInScanner from './CheckInScanner'
-
-const API_URL = '/api'
+import { API_URL } from '../../config/api'
 
 function getOrganizerId(organizer) {
   if (!organizer) return null

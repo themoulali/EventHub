@@ -9,8 +9,7 @@ import {
 } from 'react-router-dom'
 import OrganizerDashboard from './components/Organizer/OrganizerDashboard'
 import AttendeeDashboard from './components/Attendee/AttendeeDashboard'
-
-const API_URL = '/api'
+import { API_URL } from './config/api'
 
 function getStoredToken() {
   return localStorage.getItem('eventhub_token')

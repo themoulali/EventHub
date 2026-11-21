@@ -4,8 +4,7 @@ import EventCard from './EventCard'
 import EventFilters from './EventFilters'
 import SeatSelection from './SeatSelection'
 import MyTickets from './MyTickets'
-
-const API_URL = '/api'
+import { API_URL } from '../../config/api'
 
 function AttendeeDashboard({ user, token }) {
   const [events, setEvents] = useState([])

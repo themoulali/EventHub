@@ -2,8 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { io } from 'socket.io-client';
+import { API_URL, SOCKET_URL } from '../../config/api'
 
-const API_URL = '/api';
 const READER_ID = 'eventhub-qr-reader';
 
 function CheckInScanner({ events = [], token }) {
@@ -29,7 +29,7 @@ function CheckInScanner({ events = [], token }) {
   useEffect(() => {
     if (!selectedEventId) return;
 
-    const socket = io();
+    const socket = io(SOCKET_URL);
 
     const joinRoom = () => {
       socket.emit('joinEvent', selectedEventId);

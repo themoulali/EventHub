@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-
-const API_URL = '/api'
+import { API_URL } from '../../config/api'
 
 function formatDate(date) {
   if (!date) return 'Date unavailable'
