@@ -1,5 +1,4 @@
-
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 const initialForm = {
   name: '',
@@ -17,35 +16,31 @@ const initialForm = {
   ],
 }
 
+function createFormFromEvent(editingEvent) {
+  if (!editingEvent) return initialForm
+
+  return {
+    name: editingEvent.name || '',
+    description: editingEvent.description || '',
+    date: editingEvent.date
+      ? new Date(editingEvent.date).toISOString().slice(0, 16)
+      : '',
+    venue: editingEvent.venue || '',
+    capacity: editingEvent.capacity || '',
+    category: editingEvent.category || '',
+    priceTiers: editingEvent.priceTiers?.length
+      ? editingEvent.priceTiers.map(tier => ({
+          name: tier.name || '',
+          price: tier.price ?? '',
+          quantity: tier.quantity ?? '',
+        }))
+      : initialForm.priceTiers,
+  }
+}
+
 function EventForm({ onSubmit, editingEvent, onCancel, submitting = false }) {
-  const [form, setForm] = useState(initialForm)
+  const [form, setForm] = useState(() => createFormFromEvent(editingEvent))
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (editingEvent) {
-      setForm({
-        name: editingEvent.name || '',
-        description: editingEvent.description || '',
-        date: editingEvent.date
-          ? new Date(editingEvent.date).toISOString().slice(0, 16)
-          : '',
-        venue: editingEvent.venue || '',
-        capacity: editingEvent.capacity || '',
-        category: editingEvent.category || '',
-        priceTiers: editingEvent.priceTiers?.length
-          ? editingEvent.priceTiers.map((tier) => ({
-              name: tier.name,
-              price: tier.price,
-              quantity: tier.quantity,
-            }))
-          : initialForm.priceTiers,
-      })
-    } else {
-      setForm(initialForm)
-    }
-
-    setError('')
-  }, [editingEvent])
 
   function handleChange(event) {
     const { name, value } = event.target

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import EventForm from './EventForm'
 import EventList from './EventList'
 import CheckInScanner from './CheckInScanner'
@@ -22,10 +22,7 @@ function OrganizerDashboard({ user, token }) {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
-  async function loadEvents() {
-    setLoading(true)
-    setError('')
-
+  const loadEvents = useCallback(async () => {
     try {
       const response = await fetch(`${API_URL}/events`)
       const data = await response.json()
@@ -40,17 +37,22 @@ function OrganizerDashboard({ user, token }) {
           String(user._id || user.id)
       )
 
+      setError('')
       setEvents(organizerEvents)
     } catch (err) {
       setError(err.message || 'Unable to load events.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [user._id, user.id])
 
   useEffect(() => {
-    loadEvents()
-  }, [user._id, user.id])
+    const timer = setTimeout(() => {
+      loadEvents()
+    }, 0)
+
+    return () => clearTimeout(timer)
+  }, [loadEvents])
 
   async function handleSubmit(eventData) {
     setSubmitting(true)
@@ -187,6 +189,7 @@ function OrganizerDashboard({ user, token }) {
         </h2>
 
         <EventForm
+          key={editingEvent?._id || 'new'}
           onSubmit={handleSubmit}
           editingEvent={editingEvent}
           onCancel={handleCancel}

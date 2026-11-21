@@ -19,10 +19,10 @@ function SeatSelection({ event, onClose }) {
   const [bookingResult, setBookingResult] = useState(null)
 
   const loadSeats = useCallback(async () => {
-    setLoading(true)
-    setError('')
 
     try {
+      setError('')
+      setSeats(data.seats || [])
       const response = await fetch(
         `${API_URL}/events/${event._id}/seats`
       )

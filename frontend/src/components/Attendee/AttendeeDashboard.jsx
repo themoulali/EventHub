@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import EventCard from './EventCard'
 import EventFilters from './EventFilters'
 import SeatSelection from './SeatSelection'
@@ -16,10 +16,7 @@ function AttendeeDashboard({ user, token }) {
   const [selectedEvent, setSelectedEvent] = useState(null)
   const [activeView, setActiveView] = useState('events')
 
-  async function loadEvents() {
-    setLoading(true)
-    setError('')
-
+  const loadEvents = useCallback(async () => {
     try {
       const params = new URLSearchParams()
 
@@ -43,17 +40,22 @@ function AttendeeDashboard({ user, token }) {
         throw new Error(data.message || 'Unable to load events.')
       }
 
+      setError('')
       setEvents(data.events || [])
     } catch (err) {
       setError(err.message || 'Unable to load events.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [search, category])
 
   useEffect(() => {
-    loadEvents()
-  }, [search, category])
+    const timer = setTimeout(() => {
+      loadEvents()
+    }, 0)
+
+    return () => clearTimeout(timer)
+  }, [loadEvents])
 
   function handleClearFilters() {
     setSearch('')

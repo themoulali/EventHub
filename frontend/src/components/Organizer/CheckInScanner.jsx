@@ -8,6 +8,11 @@ const READER_ID = 'eventhub-qr-reader';
 
 function CheckInScanner({ events = [], token }) {
   const [selectedEventId, setSelectedEventId] = useState('');
+  const activeEventId =
+  selectedEventId ||
+  (events.length > 0
+    ? String(events[0]._id || events[0].id)
+    : '')
   const [cameraActive, setCameraActive] = useState(false);
   const [manualToken, setManualToken] = useState('');
   const [result, setResult] = useState(null);
@@ -17,15 +22,8 @@ function CheckInScanner({ events = [], token }) {
   const requestInProgress = useRef(false);
 
   const selectedEvent = events.find(
-    (event) => String(event._id || event.id) === selectedEventId
-  );
-
-  // Select the first available organizer event.
-  useEffect(() => {
-    if (!selectedEventId && events.length > 0) {
-      setSelectedEventId(String(events[0]._id || events[0].id));
-    }
-  }, [events, selectedEventId]);
+    event => String(event._id || event.id) === activeEventId
+  )
 
   // Connect to the selected event's live attendance room.
   useEffect(() => {
@@ -110,7 +108,7 @@ function CheckInScanner({ events = [], token }) {
 
       // Stop the camera after a successful scan.
       setCameraActive(false);
-    } catch (error) {
+    } catch {
       setResult({
         success: false,
         message: 'Unable to connect to the EventHub server.',
@@ -152,7 +150,7 @@ function CheckInScanner({ events = [], token }) {
           }
           scanner.clear();
         }
-      } catch (error) {
+      } catch {
         if (!cancelled) {
           setCameraActive(false);
           setResult({
@@ -179,7 +177,7 @@ function CheckInScanner({ events = [], token }) {
           .finally(() => {
             try {
               scanner.clear();
-            } catch (error) {
+            } catch {
               // Scanner may already be cleared.
             }
 

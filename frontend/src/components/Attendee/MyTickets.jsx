@@ -21,9 +21,6 @@ function MyTickets({ token }) {
   const [cancellingId, setCancellingId] = useState(null)
 
   const loadBookings = useCallback(async () => {
-    setLoading(true)
-    setError('')
-
     try {
       const response = await fetch(`${API_URL}/bookings/my-bookings`, {
         headers: {
@@ -38,6 +35,7 @@ function MyTickets({ token }) {
       }
 
       const data = result.data || {}
+      setError('')
 
       setBookings(data.bookings || [])
       setUpcomingBookings(data.upcomingBookings || [])
@@ -50,7 +48,11 @@ function MyTickets({ token }) {
   }, [token])
 
   useEffect(() => {
-    loadBookings()
+    const timer = setTimeout(() => {
+      loadBookings()
+    }, 0)
+
+    return () => clearTimeout(timer)
   }, [loadBookings])
 
   async function handleCancelBooking(booking) {
@@ -61,9 +63,6 @@ function MyTickets({ token }) {
     if (!confirmed) return
 
     setCancellingId(booking.id)
-    setError('')
-    setMessage('')
-
     try {
       const response = await fetch(
         `${API_URL}/bookings/${booking.id}/cancel`,
