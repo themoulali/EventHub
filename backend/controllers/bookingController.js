@@ -421,6 +421,352 @@ const createBooking = async (req, res) => {
   }
 };
 
+// Get the authenticated attendee's booking history and tickets.
+const getMyBookings = async (req, res) => {
+  try {
+    const attendeeId = req.user.id;
+
+    // Fetch only bookings belonging to the logged-in attendee.
+    const attendeeBookings = await Booking.find({
+      attendee: attendeeId,
+    })
+      .populate('event', 'name date venue category')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (attendeeBookings.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No bookings found',
+        data: {
+          bookings: [],
+          upcomingBookings: [],
+          pastBookings: [],
+        },
+      });
+    }
+
+    const bookingIds = attendeeBookings.map(
+      (booking) => booking._id
+    );
+
+    // QR tokens are normally hidden, so explicitly select them here.
+    const tickets = await Ticket.find({
+      booking: { $in: bookingIds },
+    })
+      .select('+qrToken')
+      .lean();
+
+    const ticketsByBooking = new Map();
+
+    // Group tickets by their booking.
+    for (const ticket of tickets) {
+      const bookingId = ticket.booking.toString();
+
+      if (!ticketsByBooking.has(bookingId)) {
+        ticketsByBooking.set(bookingId, []);
+      }
+
+      // Generate QR images only for valid tickets.
+      const qrCode =
+        ticket.status === 'valid'
+          ? await generateQrCode(ticket.qrToken)
+          : null;
+
+      ticketsByBooking.get(bookingId).push({
+        ticketNumber: ticket.ticketNumber,
+        seatNumber: ticket.seatNumber,
+        price: ticket.price,
+        status: ticket.status,
+        checkedInAt: ticket.checkedInAt,
+        qrCode,
+      });
+    }
+
+    const now = new Date();
+
+    const bookings = attendeeBookings.map((booking) => ({
+      id: booking._id,
+      bookingReference: booking.bookingReference,
+      status: booking.status,
+      totalAmount: booking.totalAmount,
+      payment: booking.payment,
+      createdAt: booking.createdAt,
+      confirmedAt: booking.confirmedAt,
+      event: booking.event,
+      seats: booking.seats,
+      tickets: ticketsByBooking.get(booking._id.toString()) || [],
+    }));
+
+    // Classify bookings using the event date, not booking creation date.
+    const upcomingBookings = bookings.filter(
+      (booking) =>
+        booking.event &&
+        new Date(booking.event.date) >= now
+    );
+
+    const pastBookings = bookings.filter(
+      (booking) =>
+        booking.event &&
+        new Date(booking.event.date) < now
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Booking history retrieved successfully',
+      data: {
+        bookings,
+        upcomingBookings,
+        pastBookings,
+      },
+    });
+  } catch (error) {
+    console.error('Get attendee bookings error:', error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to retrieve booking history',
+    });
+  }
+};
+
+// Cancel an eligible booking and record its simulated refund.
+const cancelBooking = async (req, res) => {
+  let session;
+
+  try {
+    const { bookingId } = req.params;
+    const attendeeId = req.user.id;
+
+    if (!mongoose.isValidObjectId(bookingId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid booking ID',
+      });
+    }
+
+    session = await mongoose.startSession();
+
+    let refundTransactionId;
+    let cancelledBooking;
+    let seatsToBroadcast = [];
+
+    await session.withTransaction(async () => {
+      // Find only a confirmed booking belonging to this attendee.
+      const booking = await Booking.findOne({
+        _id: bookingId,
+        attendee: attendeeId,
+        status: 'confirmed',
+      })
+        .session(session)
+        .populate('event', 'date');
+
+      if (!booking) {
+        const error = new Error(
+          'Confirmed booking not found or not eligible for cancellation'
+        );
+        error.statusCode = 404;
+        throw error;
+      }
+
+      // Do not allow cancellation after the event has started.
+      if (
+        !booking.event ||
+        new Date(booking.event.date) <= new Date()
+      ) {
+        const error = new Error(
+          'This booking can no longer be cancelled'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      if (booking.payment.status !== 'successful') {
+        const error = new Error(
+          'Only successfully paid bookings can be cancelled'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      // Read all tickets belonging to this booking.
+      const tickets = await Ticket.find({
+        booking: booking._id,
+      })
+        .session(session)
+        .lean();
+
+      if (
+        tickets.length !== booking.seats.length ||
+        tickets.length === 0
+      ) {
+        const error = new Error(
+          'Booking tickets could not be verified'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      // A used, checked-in, or already-cancelled ticket blocks cancellation.
+      const ineligibleTicket = tickets.some(
+        (ticket) =>
+          ticket.status !== 'valid' || ticket.checkedInAt
+      );
+
+      if (ineligibleTicket) {
+        const error = new Error(
+          'A ticket has already been used or is not eligible for cancellation'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const seatIds = booking.seats.map(
+        (bookedSeat) => bookedSeat.seat
+      );
+
+      // Confirm every seat is still booked for this event.
+      seatsToBroadcast = await Seat.find({
+        _id: { $in: seatIds },
+        event: booking.event._id,
+        status: 'booked',
+      })
+        .session(session)
+        .lean();
+
+      if (seatsToBroadcast.length !== seatIds.length) {
+        const error = new Error(
+          'Some booked seats could not be verified'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      // Cancel all valid tickets atomically.
+      const ticketUpdate = await Ticket.updateMany(
+        {
+          booking: booking._id,
+          status: 'valid',
+          checkedInAt: null,
+        },
+        {
+          $set: {
+            status: 'cancelled',
+          },
+        },
+        { session }
+      );
+
+      if (ticketUpdate.matchedCount !== tickets.length) {
+        const error = new Error(
+          'Ticket status changed during cancellation'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      // Restore only this booking's seats that are still booked.
+      const seatUpdate = await Seat.updateMany(
+        {
+          _id: { $in: seatIds },
+          event: booking.event._id,
+          status: 'booked',
+        },
+        {
+          $set: {
+            status: 'available',
+            heldBy: null,
+            holdExpiresAt: null,
+          },
+        },
+        { session }
+      );
+
+      if (seatUpdate.matchedCount !== seatIds.length) {
+        const error = new Error(
+          'Seat availability changed during cancellation'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      refundTransactionId =
+        `MOCK-REFUND-${randomUUID()}`;
+
+      // Cancel the booking and record its simulated refund.
+      const bookingUpdate = await Booking.updateOne(
+        {
+          _id: booking._id,
+          attendee: attendeeId,
+          status: 'confirmed',
+        },
+        {
+          $set: {
+            status: 'cancelled',
+            'payment.status': 'refunded',
+            'payment.refund.transactionId':
+              refundTransactionId,
+            'payment.refund.amount': booking.totalAmount,
+            'payment.refund.refundedAt': new Date(),
+          },
+        },
+        { session }
+      );
+
+      if (bookingUpdate.matchedCount !== 1) {
+        const error = new Error(
+          'Booking status changed during cancellation'
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+
+      cancelledBooking = {
+        id: booking._id,
+        bookingReference: booking.bookingReference,
+        status: 'cancelled',
+        refund: {
+          transactionId: refundTransactionId,
+          amount: booking.totalAmount,
+        },
+      };
+    });
+
+    // Broadcast seat availability only after the transaction commits.
+    seatsToBroadcast.forEach((seat) => {
+      emitSeatUpdate({
+        ...seat,
+        status: 'available',
+        heldBy: null,
+        holdExpiresAt: null,
+      });
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Booking cancelled and simulated refund recorded',
+      booking: cancelledBooking,
+    });
+  } catch (error) {
+    console.error('Booking cancellation error:', error.message);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message:
+        error.statusCode
+          ? error.message
+          : 'Unable to cancel booking',
+    });
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
+  }
+};
+
 module.exports = {
   createBooking,
+  getMyBookings,
+  cancelBooking,
 };
+

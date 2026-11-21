@@ -401,7 +401,7 @@ const token = getStoredToken()
             {isOrganizer ? (
         <OrganizerDashboard user={user} token={token} />
             ) : (
-        <AttendeeDashboard user={user} />
+        <AttendeeDashboard user={user} token={token} />
       )}
     </main>
   )

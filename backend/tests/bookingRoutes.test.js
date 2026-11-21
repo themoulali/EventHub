@@ -16,17 +16,22 @@ const {
 
 jest.mock('../models/Booking', () => ({
   create: jest.fn(),
+  find: jest.fn(),
+  findOne: jest.fn(),
   findByIdAndUpdate: jest.fn(),
   updateOne: jest.fn(),
 }));
 
 jest.mock('../models/Ticket', () => ({
+  find: jest.fn(),
   insertMany: jest.fn(),
+  updateMany: jest.fn(),
 }));
 
 jest.mock('../models/Seat', () => ({
   find: jest.fn(),
   findOneAndUpdate: jest.fn(),
+  updateMany: jest.fn(),
 }));
 
 jest.mock('../models/Event', () => ({
@@ -88,6 +93,34 @@ describe('Booking routes', () => {
     Seat.findOneAndUpdate.mockResolvedValue(null);
 
     Event.findById.mockResolvedValue(null);
+  });
+
+  Booking.findOne.mockReturnValue({
+    session: jest.fn().mockReturnThis(),
+    populate: jest.fn().mockResolvedValue(null),
+  });
+
+  Ticket.updateMany.mockResolvedValue({
+    matchedCount: 0,
+    modifiedCount: 0,
+  });
+
+  Seat.updateMany.mockResolvedValue({
+    matchedCount: 0,
+    modifiedCount: 0,
+  });
+
+  // Default mock behavior for booking history
+  Booking.find.mockReturnValue({
+    populate: jest.fn().mockReturnThis(),
+    sort: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue([]),
+  });
+
+  Ticket.find.mockReturnValue({
+    select: jest.fn().mockReturnThis(),
+    session: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue([]),
   });
 
   test('should reject requests without authentication', async () => {
@@ -666,4 +699,474 @@ describe('Booking routes', () => {
     // Recovery attempts to release any remaining attendee hold.
     expect(Seat.findOneAndUpdate).toHaveBeenCalled();
   });
+  test('should reject requests without authentication for booking history', async () => {
+    const response = await request(app)
+      .get('/api/bookings/my-bookings');
+
+    expect(response.status).toBe(401);
+    expect(Booking.find).not.toHaveBeenCalled();
+  });
+
+  test('should reject organizers accessing attendee booking history', async () => {
+    const response = await request(app)
+      .get('/api/bookings/my-bookings')
+      .set('Authorization', `Bearer ${organizerToken}`);
+
+    expect(response.status).toBe(403);
+    expect(Booking.find).not.toHaveBeenCalled();
+  });
+
+  test('should return an empty booking history for an attendee with no bookings', async () => {
+    const response = await request(app)
+      .get('/api/bookings/my-bookings')
+      .set('Authorization', `Bearer ${attendeeToken}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.bookings).toEqual([]);
+    expect(response.body.data.upcomingBookings).toEqual([]);
+    expect(response.body.data.pastBookings).toEqual([]);
+
+    expect(Booking.find).toHaveBeenCalledWith({
+      attendee: ATTENDEE_ID,
+    });
+  });
+
+test('should return booking history with event dates and ticket QR codes', async () => {
+  const upcomingDate = new Date(Date.now() + 86400000);
+  const pastDate = new Date(Date.now() - 86400000);
+
+  const upcomingBooking = {
+    _id: 'booking-upcoming',
+    bookingReference: 'EVT-UPCOMING-001',
+    status: 'confirmed',
+    totalAmount: 998,
+    payment: { status: 'successful' },
+    createdAt: new Date(),
+    confirmedAt: new Date(),
+    event: {
+      _id: EVENT_ID,
+      name: 'Upcoming Technology Event',
+      date: upcomingDate,
+      venue: 'Hyderabad',
+      category: 'Technology',
+    },
+    seats: [],
+  };
+
+  const pastBooking = {
+    _id: 'booking-past',
+    bookingReference: 'EVT-PAST-001',
+    status: 'confirmed',
+    totalAmount: 499,
+    payment: { status: 'successful' },
+    createdAt: new Date(),
+    confirmedAt: new Date(),
+    event: {
+      _id: EVENT_ID,
+      name: 'Past Technology Event',
+      date: pastDate,
+      venue: 'Hyderabad',
+      category: 'Technology',
+    },
+    seats: [],
+  };
+
+  Booking.find.mockReturnValue({
+    populate: jest.fn().mockReturnThis(),
+    sort: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue([
+      upcomingBooking,
+      pastBooking,
+    ]),
+  });
+
+  Ticket.find.mockReturnValue({
+    select: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue([
+      {
+        booking: 'booking-upcoming',
+        ticketNumber: 'TKT-001',
+        seatNumber: 'A1',
+        price: 499,
+        status: 'valid',
+        qrToken: 'valid-qr-token',
+        checkedInAt: null,
+      },
+      {
+        booking: 'booking-upcoming',
+        ticketNumber: 'TKT-002',
+        seatNumber: 'A2',
+        price: 499,
+        status: 'used',
+        qrToken: 'used-qr-token',
+        checkedInAt: new Date(),
+      },
+      {
+        booking: 'booking-upcoming',
+        ticketNumber: 'TKT-003',
+        seatNumber: 'A3',
+        price: 499,
+        status: 'cancelled',
+        qrToken: 'cancelled-qr-token',
+        checkedInAt: null,
+      },
+    ]),
+  });
+
+  generateQrCode.mockResolvedValue(
+    'data:image/png;base64,test-qr'
+  );
+
+  const response = await request(app)
+    .get('/api/bookings/my-bookings')
+    .set('Authorization', `Bearer ${attendeeToken}`);
+
+  expect(response.status).toBe(200);
+  expect(response.body.success).toBe(true);
+
+  const data = response.body.data;
+
+  expect(data.bookings).toHaveLength(2);
+  expect(data.upcomingBookings).toHaveLength(1);
+  expect(data.pastBookings).toHaveLength(1);
+
+  expect(data.upcomingBookings[0].event.name)
+    .toBe('Upcoming Technology Event');
+
+  expect(data.pastBookings[0].event.name)
+    .toBe('Past Technology Event');
+
+  const tickets = data.upcomingBookings[0].tickets;
+
+  expect(tickets).toHaveLength(3);
+
+  expect(tickets[0].status).toBe('valid');
+  expect(tickets[0].qrCode)
+    .toBe('data:image/png;base64,test-qr');
+
+  expect(tickets[1].status).toBe('used');
+  expect(tickets[1].qrCode).toBeNull();
+
+  expect(tickets[2].status).toBe('cancelled');
+  expect(tickets[2].qrCode).toBeNull();
+
+  expect(tickets[0]).not.toHaveProperty('qrToken');
+  expect(tickets[1]).not.toHaveProperty('qrToken');
+  expect(tickets[2]).not.toHaveProperty('qrToken');
+
+  expect(generateQrCode).toHaveBeenCalledTimes(1);
+  expect(generateQrCode).toHaveBeenCalledWith('valid-qr-token');
+});
+
+test('should cancel a confirmed booking, refund payment, cancel tickets, and release seats', async () => {
+  const bookingId = '507f1f77bcf86cd799439012';
+  const seatId = '507f1f77bcf86cd799439013';
+  const futureEventDate = new Date(Date.now() + 86400000);
+
+  const booking = {
+    _id: bookingId,
+    attendee: ATTENDEE_ID,
+    bookingReference: 'EVT-CANCEL-001',
+    status: 'confirmed',
+    totalAmount: 499,
+    payment: {
+      status: 'successful',
+    },
+    event: {
+      _id: EVENT_ID,
+      date: futureEventDate,
+    },
+    seats: [
+      {
+        seat: seatId,
+        seatNumber: 'A1',
+        price: 499,
+      },
+    ],
+  };
+
+  const tickets = [
+    {
+      ticketNumber: 'TKT-CANCEL-001',
+      booking: bookingId,
+      status: 'valid',
+      checkedInAt: null,
+    },
+  ];
+
+  const bookedSeats = [
+    {
+      _id: seatId,
+      event: EVENT_ID,
+      seatNumber: 'A1',
+      row: 'A',
+      status: 'booked',
+      heldBy: null,
+      holdExpiresAt: null,
+    },
+  ];
+
+  // Mock MongoDB transaction.
+  const session = {
+    withTransaction: jest.fn(async (callback) => callback()),
+    endSession: jest.fn().mockResolvedValue(undefined),
+  };
+
+  jest.spyOn(mongoose, 'startSession')
+    .mockResolvedValue(session);
+
+  // Mock the booking lookup and its chained queries.
+  Booking.findOne.mockReturnValue({
+    session: jest.fn().mockReturnThis(),
+    populate: jest.fn().mockResolvedValue(booking),
+  });
+
+  // Mock ticket lookup.
+  Ticket.find.mockReturnValue({
+    session: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue(tickets),
+  });
+
+  // Mock booked-seat lookup.
+  Seat.find.mockReturnValue({
+    session: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue(bookedSeats),
+  });
+
+  Ticket.updateMany.mockResolvedValue({
+    matchedCount: 1,
+    modifiedCount: 1,
+  });
+
+  Seat.updateMany.mockResolvedValue({
+    matchedCount: 1,
+    modifiedCount: 1,
+  });
+
+  Booking.updateOne.mockResolvedValue({
+    matchedCount: 1,
+    modifiedCount: 1,
+  });
+
+  const response = await request(app)
+    .post(`/api/bookings/${bookingId}/cancel`)
+    .set('Authorization', `Bearer ${attendeeToken}`);
+
+  expect(response.status).toBe(200);
+  expect(response.body.success).toBe(true);
+
+  expect(response.body.booking.status).toBe('cancelled');
+  expect(response.body.booking.refund.amount).toBe(499);
+  expect(response.body.booking.refund.transactionId)
+    .toMatch(/^MOCK-REFUND-/);
+
+  // Confirm that the booking lookup is attendee-specific.
+  expect(Booking.findOne).toHaveBeenCalledWith({
+    _id: bookingId,
+    attendee: ATTENDEE_ID,
+    status: 'confirmed',
+  });
+
+  // Confirm that valid tickets were cancelled.
+  expect(Ticket.updateMany).toHaveBeenCalledWith(
+    {
+      booking: bookingId,
+      status: 'valid',
+      checkedInAt: null,
+    },
+    {
+      $set: {
+        status: 'cancelled',
+      },
+    },
+    { session }
+  );
+
+  // Confirm that only the booking's booked seats were released.
+  expect(Seat.updateMany).toHaveBeenCalledWith(
+    {
+      _id: { $in: [seatId] },
+      event: EVENT_ID,
+      status: 'booked',
+    },
+    {
+      $set: {
+        status: 'available',
+        heldBy: null,
+        holdExpiresAt: null,
+      },
+    },
+    { session }
+  );
+
+  // Confirm the simulated refund was recorded.
+  expect(Booking.updateOne).toHaveBeenCalledWith(
+    {
+      _id: bookingId,
+      attendee: ATTENDEE_ID,
+      status: 'confirmed',
+    },
+    {
+      $set: expect.objectContaining({
+        status: 'cancelled',
+        'payment.status': 'refunded',
+        'payment.refund.transactionId':
+          response.body.booking.refund.transactionId,
+        'payment.refund.amount': 499,
+      }),
+    },
+    { session }
+  );
+
+  expect(session.withTransaction).toHaveBeenCalled();
+  expect(session.endSession).toHaveBeenCalled();
+});
+
+test('should reject cancellation without authentication', async () => {
+  const response = await request(app)
+    .post('/api/bookings/507f1f77bcf86cd799439012/cancel');
+
+  expect(response.status).toBe(401);
+  expect(Booking.findOne).not.toHaveBeenCalled();
+});
+
+test('should reject cancellation requests from organizers', async () => {
+  const response = await request(app)
+    .post('/api/bookings/507f1f77bcf86cd799439012/cancel')
+    .set('Authorization', `Bearer ${organizerToken}`);
+
+  expect(response.status).toBe(403);
+  expect(Booking.findOne).not.toHaveBeenCalled();
+});
+
+test('should reject an invalid booking ID for cancellation', async () => {
+  const response = await request(app)
+    .post('/api/bookings/invalid-booking-id/cancel')
+    .set('Authorization', `Bearer ${attendeeToken}`);
+
+  expect(response.status).toBe(400);
+  expect(response.body.success).toBe(false);
+  expect(Booking.findOne).not.toHaveBeenCalled();
+});
+
+test('should reject cancellation when the booking does not exist or belong to the attendee', async () => {
+  const bookingId = '507f1f77bcf86cd799439012';
+
+  Booking.findOne.mockReturnValue({
+    session: jest.fn().mockReturnThis(),
+    populate: jest.fn().mockResolvedValue(null),
+  });
+
+  const session = {
+    withTransaction: jest.fn(async (callback) => callback()),
+    endSession: jest.fn().mockResolvedValue(undefined),
+  };
+
+  jest.spyOn(mongoose, 'startSession')
+    .mockResolvedValue(session);
+
+  const response = await request(app)
+    .post(`/api/bookings/${bookingId}/cancel`)
+    .set('Authorization', `Bearer ${attendeeToken}`);
+
+  expect(response.status).toBe(404);
+  expect(response.body.success).toBe(false);
+  expect(Ticket.updateMany).not.toHaveBeenCalled();
+  expect(Seat.updateMany).not.toHaveBeenCalled();
+  expect(Booking.updateOne).not.toHaveBeenCalled();
+  expect(session.endSession).toHaveBeenCalled();
+});
+
+test('should reject cancellation when the event has already passed', async () => {
+  const bookingId = '507f1f77bcf86cd799439012';
+
+  const booking = {
+    _id: bookingId,
+    attendee: ATTENDEE_ID,
+    status: 'confirmed',
+    payment: { status: 'successful' },
+    event: {
+      _id: EVENT_ID,
+      date: new Date(Date.now() - 86400000),
+    },
+    seats: [{ seat: '507f1f77bcf86cd799439013' }],
+  };
+
+  const session = {
+    withTransaction: jest.fn(async (callback) => callback()),
+    endSession: jest.fn().mockResolvedValue(undefined),
+  };
+
+  jest.spyOn(mongoose, 'startSession')
+    .mockResolvedValue(session);
+
+  Booking.findOne.mockReturnValue({
+    session: jest.fn().mockReturnThis(),
+    populate: jest.fn().mockResolvedValue(booking),
+  });
+
+  const response = await request(app)
+    .post(`/api/bookings/${bookingId}/cancel`)
+    .set('Authorization', `Bearer ${attendeeToken}`);
+
+  expect(response.status).toBe(409);
+  expect(response.body.success).toBe(false);
+  expect(Ticket.find).not.toHaveBeenCalled();
+  expect(Ticket.updateMany).not.toHaveBeenCalled();
+  expect(Seat.updateMany).not.toHaveBeenCalled();
+  expect(Booking.updateOne).not.toHaveBeenCalled();
+  expect(session.endSession).toHaveBeenCalled();
+});
+
+test('should reject cancellation when a ticket has already been used', async () => {
+  const bookingId = '507f1f77bcf86cd799439012';
+
+  const booking = {
+    _id: bookingId,
+    attendee: ATTENDEE_ID,
+    status: 'confirmed',
+    payment: { status: 'successful' },
+    event: {
+      _id: EVENT_ID,
+      date: new Date(Date.now() + 86400000),
+    },
+    seats: [{ seat: '507f1f77bcf86cd799439013' }],
+  };
+
+  const session = {
+    withTransaction: jest.fn(async (callback) => callback()),
+    endSession: jest.fn().mockResolvedValue(undefined),
+  };
+
+  jest.spyOn(mongoose, 'startSession')
+    .mockResolvedValue(session);
+
+  Booking.findOne.mockReturnValue({
+    session: jest.fn().mockReturnThis(),
+    populate: jest.fn().mockResolvedValue(booking),
+  });
+
+  Ticket.find.mockReturnValue({
+    session: jest.fn().mockReturnThis(),
+    lean: jest.fn().mockResolvedValue([
+      {
+        booking: bookingId,
+        status: 'used',
+        checkedInAt: new Date(),
+      },
+    ]),
+  });
+
+  const response = await request(app)
+    .post(`/api/bookings/${bookingId}/cancel`)
+    .set('Authorization', `Bearer ${attendeeToken}`);
+
+  expect(response.status).toBe(409);
+  expect(response.body.success).toBe(false);
+  expect(Ticket.updateMany).not.toHaveBeenCalled();
+  expect(Seat.updateMany).not.toHaveBeenCalled();
+  expect(Booking.updateOne).not.toHaveBeenCalled();
+  expect(session.endSession).toHaveBeenCalled();
+});
 });
